@@ -11,6 +11,8 @@ import { createTasks } from './notion';
 import { downloadAndConvert } from './audio';
 import { sendMessage, setWebhook } from './telegram';
 import { handleStart, handleReset, handleStatus, handleOnboardingStep } from './onboarding';
+import { detectIntent } from './intent';
+import { handleList as execList, handleUpdate as execUpdate, handleDelete as execDelete } from './taskManager';
 import { TelegramUpdate, TelegramMessage, AppConfig, UserData, NotionCreateResult } from './types';
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
@@ -155,6 +157,101 @@ async function processTaskMessage(
     return;
   }
 
+  // Detect intent
+  let action;
+  try {
+    action = await detectIntent(inputText, requestId, user.openaiApiKey!);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Intent detection failed, falling back to create', { requestId, error: msg });
+    action = { intent: 'create' as const, createText: inputText };
+  }
+
+  log.info('Processing action', { requestId, intent: action.intent });
+
+  try {
+    switch (action.intent) {
+      case 'list':
+        await handleListAction(chatId, requestId, user, cfg);
+        break;
+
+      case 'update':
+        await handleUpdateAction(action, chatId, requestId, user, cfg);
+        break;
+
+      case 'delete':
+        await handleDeleteAction(action, chatId, requestId, user, cfg);
+        break;
+
+      case 'create':
+      default:
+        await handleCreateAction(action.createText || inputText, chatId, requestId, user, cfg);
+        break;
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Action processing failed', { requestId, intent: action.intent, error: msg });
+    await sendMessage(
+      cfg.telegramBotToken,
+      chatId,
+      '❌ Ошибка при выполнении операции. Попробуйте ещё раз.',
+    );
+  }
+}
+
+// ── Action handlers ─────────────────────────────────────────────────────────
+
+async function handleListAction(
+  chatId: number,
+  requestId: string,
+  user: UserData,
+  cfg: AppConfig,
+): Promise<void> {
+  const result = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
+  await sendMessage(cfg.telegramBotToken, chatId, result);
+}
+
+async function handleUpdateAction(
+  action: import('./types').TaskAction,
+  chatId: number,
+  requestId: string,
+  user: UserData,
+  cfg: AppConfig,
+): Promise<void> {
+  const result = await execUpdate(
+    action,
+    requestId,
+    user.notionToken!,
+    user.notionDatabaseId!,
+    user.openaiApiKey!,
+  );
+  await sendMessage(cfg.telegramBotToken, chatId, result);
+}
+
+async function handleDeleteAction(
+  action: import('./types').TaskAction,
+  chatId: number,
+  requestId: string,
+  user: UserData,
+  cfg: AppConfig,
+): Promise<void> {
+  const result = await execDelete(
+    action,
+    requestId,
+    user.notionToken!,
+    user.notionDatabaseId!,
+    user.openaiApiKey!,
+  );
+  await sendMessage(cfg.telegramBotToken, chatId, result);
+}
+
+async function handleCreateAction(
+  inputText: string,
+  chatId: number,
+  requestId: string,
+  user: UserData,
+  cfg: AppConfig,
+): Promise<void> {
   // Parse tasks
   let tasks;
   try {

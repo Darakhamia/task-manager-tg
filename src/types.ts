@@ -49,6 +49,33 @@ export interface NotionCreateResult {
   error?: string;
 }
 
+// ── Existing Notion task (from query) ──────────────────────────────────────
+
+export interface NotionTask {
+  pageId: string;
+  name: string;
+  description: string;
+  status: string;
+  priority: string;
+  due: string;
+}
+
+// ── Intent detection ───────────────────────────────────────────────────────
+
+export type TaskIntent = 'create' | 'update' | 'delete' | 'list';
+
+export interface TaskAction {
+  intent: TaskIntent;
+  searchQuery?: string;
+  updates?: {
+    status?: string;
+    priority?: string;
+    due?: string;
+    name?: string;
+  };
+  createText?: string;
+}
+
 // ── Per-user data ───────────────────────────────────────────────────────────
 
 export type OnboardingStep =
