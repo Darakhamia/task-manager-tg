@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { TaskAction, NotionTask } from './types';
+import { TaskAction, NotionTask, InlineKeyboard } from './types';
 import { queryTasks, updateTask, deleteTask } from './notion';
 import { log } from './logger';
 
@@ -65,32 +65,53 @@ async function findTask(
 
 // ── Handle list action ───────────────────────────────────────────────────────
 
+export interface ListResult {
+  text: string;
+  keyboard: InlineKeyboard;
+}
+
 export async function handleList(
   requestId: string,
   notionToken: string,
   notionDatabaseId: string,
-): Promise<string> {
+): Promise<ListResult> {
   const tasks = await queryTasks(requestId, notionToken, notionDatabaseId);
 
   if (tasks.length === 0) {
-    return '📋 Список задач пуст.';
+    return {
+      text: '📋 Список задач пуст.',
+      keyboard: [],
+    };
   }
 
   const activeTasks = tasks.filter((t) => t.status !== 'Done');
   const doneTasks = tasks.filter((t) => t.status === 'Done');
 
   const lines: string[] = ['📋 <b>Ваши задачи:</b>\n'];
+  const keyboard: InlineKeyboard = [];
 
   if (activeTasks.length > 0) {
     lines.push('<b>Активные:</b>');
-    activeTasks.slice(0, 20).forEach((t, i) => {
+    activeTasks.slice(0, 15).forEach((t, i) => {
       const status = statusEmoji(t.status);
       const priority = priorityLabel(t.priority);
       const due = t.due ? ` | до ${t.due}` : '';
       lines.push(`${i + 1}. ${status} <b>${escapeHtml(t.name)}</b> ${priority}${due}`);
+
+      // Per-task action buttons
+      const shortName = t.name.length > 20 ? t.name.slice(0, 18) + '…' : t.name;
+      const row = [
+        { text: `✅ ${shortName}`, callback_data: `d:${t.pageId}` },
+        { text: '🗑', callback_data: `x:${t.pageId}` },
+      ];
+      // Add "In progress" button only if task is "To do"
+      if (t.status === 'To do') {
+        row.splice(1, 0, { text: '🔵', callback_data: `p:${t.pageId}` });
+      }
+      keyboard.push(row);
     });
-    if (activeTasks.length > 20) {
-      lines.push(`…и ещё ${activeTasks.length - 20}`);
+    if (activeTasks.length > 15) {
+      lines.push(`…и ещё ${activeTasks.length - 15}`);
     }
   }
 
@@ -98,7 +119,10 @@ export async function handleList(
     lines.push(`\n✅ <b>Выполнено:</b> ${doneTasks.length} ${pluralTask(doneTasks.length)}`);
   }
 
-  return lines.join('\n');
+  // Add refresh button at the bottom
+  keyboard.push([{ text: '🔄 Обновить', callback_data: 'list' }]);
+
+  return { text: lines.join('\n'), keyboard };
 }
 
 // ── Handle update action ─────────────────────────────────────────────────────

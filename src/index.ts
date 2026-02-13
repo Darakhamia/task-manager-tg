@@ -9,11 +9,12 @@ import { initStore, getUser } from './store';
 import { transcribe, parseTasks } from './openai';
 import { createTasks } from './notion';
 import { downloadAndConvert } from './audio';
-import { sendMessage, setWebhook } from './telegram';
+import { sendMessage, sendMessageWithKeyboard, editMessageText, answerCallbackQuery, setWebhook } from './telegram';
 import { handleStart, handleReset, handleStatus, handleOnboardingStep } from './onboarding';
 import { detectIntent } from './intent';
 import { handleList as execList, handleUpdate as execUpdate, handleDelete as execDelete } from './taskManager';
-import { TelegramUpdate, TelegramMessage, AppConfig, UserData, NotionCreateResult } from './types';
+import { updateTask as notionUpdateTask, deleteTask as notionDeleteTask } from './notion';
+import { TelegramUpdate, TelegramMessage, TelegramCallbackQuery, AppConfig, UserData, NotionCreateResult, InlineKeyboard } from './types';
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -63,6 +64,12 @@ async function handleUpdate(
   requestId: string,
   cfg: AppConfig,
 ): Promise<void> {
+  // Handle callback queries (inline button presses)
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query, requestId, cfg);
+    return;
+  }
+
   const message = update.message ?? update.edited_message;
   if (!message) {
     log.debug('Update without message, skipping', { requestId, updateId: update.update_id });
@@ -199,6 +206,15 @@ async function processTaskMessage(
   }
 }
 
+// ── Main menu keyboard ──────────────────────────────────────────────────────
+
+const MAIN_MENU: InlineKeyboard = [
+  [
+    { text: '📋 Мои задачи', callback_data: 'list' },
+    { text: '⚙️ Настройки', callback_data: 'status' },
+  ],
+];
+
 // ── Action handlers ─────────────────────────────────────────────────────────
 
 async function handleListAction(
@@ -207,8 +223,12 @@ async function handleListAction(
   user: UserData,
   cfg: AppConfig,
 ): Promise<void> {
-  const result = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
-  await sendMessage(cfg.telegramBotToken, chatId, result);
+  const { text, keyboard } = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
+  if (keyboard.length > 0) {
+    await sendMessageWithKeyboard(cfg.telegramBotToken, chatId, text, keyboard);
+  } else {
+    await sendMessageWithKeyboard(cfg.telegramBotToken, chatId, text, MAIN_MENU);
+  }
 }
 
 async function handleUpdateAction(
@@ -287,9 +307,103 @@ async function handleCreateAction(
     return;
   }
 
-  // Build confirmation message
+  // Build confirmation message with menu buttons
   const confirmation = buildConfirmation(results);
-  await sendMessage(cfg.telegramBotToken, chatId, confirmation);
+  await sendMessageWithKeyboard(cfg.telegramBotToken, chatId, confirmation, MAIN_MENU);
+}
+
+// ── Callback query handler ───────────────────────────────────────────────────
+
+async function handleCallbackQuery(
+  cq: TelegramCallbackQuery,
+  requestId: string,
+  cfg: AppConfig,
+): Promise<void> {
+  const chatId = cq.message?.chat.id;
+  const messageId = cq.message?.message_id;
+  const data = cq.data ?? '';
+
+  if (!chatId) {
+    await answerCallbackQuery(cfg.telegramBotToken, cq.id);
+    return;
+  }
+
+  log.info('Callback query received', { requestId, chatId, data });
+
+  const user = getUser(chatId);
+  if (!user || user.step !== 'ready') {
+    await answerCallbackQuery(cfg.telegramBotToken, cq.id, 'Бот не настроен. Отправь /start');
+    return;
+  }
+
+  try {
+    if (data === 'list') {
+      await answerCallbackQuery(cfg.telegramBotToken, cq.id);
+      const { text, keyboard } = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
+      if (messageId) {
+        // Update the existing message instead of sending a new one
+        await editMessageText(
+          cfg.telegramBotToken,
+          chatId,
+          messageId,
+          text,
+          keyboard.length > 0 ? keyboard : MAIN_MENU,
+        );
+      } else {
+        await sendMessageWithKeyboard(cfg.telegramBotToken, chatId, text, keyboard.length > 0 ? keyboard : MAIN_MENU);
+      }
+      return;
+    }
+
+    if (data === 'status') {
+      await answerCallbackQuery(cfg.telegramBotToken, cq.id);
+      await handleStatus(cfg.telegramBotToken, chatId);
+      return;
+    }
+
+    // d:pageId — mark as Done
+    if (data.startsWith('d:')) {
+      const pageId = data.slice(2);
+      await notionUpdateTask(requestId, user.notionToken!, pageId, { status: 'Done' });
+      await answerCallbackQuery(cfg.telegramBotToken, cq.id, '✅ Задача выполнена!');
+      // Refresh the task list
+      const { text, keyboard } = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
+      if (messageId) {
+        await editMessageText(cfg.telegramBotToken, chatId, messageId, text, keyboard.length > 0 ? keyboard : MAIN_MENU);
+      }
+      return;
+    }
+
+    // p:pageId — mark as In progress
+    if (data.startsWith('p:')) {
+      const pageId = data.slice(2);
+      await notionUpdateTask(requestId, user.notionToken!, pageId, { status: 'In progress' });
+      await answerCallbackQuery(cfg.telegramBotToken, cq.id, '🔵 Задача в работе!');
+      const { text, keyboard } = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
+      if (messageId) {
+        await editMessageText(cfg.telegramBotToken, chatId, messageId, text, keyboard.length > 0 ? keyboard : MAIN_MENU);
+      }
+      return;
+    }
+
+    // x:pageId — delete (archive) task
+    if (data.startsWith('x:')) {
+      const pageId = data.slice(2);
+      await notionDeleteTask(requestId, user.notionToken!, pageId);
+      await answerCallbackQuery(cfg.telegramBotToken, cq.id, '🗑 Задача удалена!');
+      const { text, keyboard } = await execList(requestId, user.notionToken!, user.notionDatabaseId!);
+      if (messageId) {
+        await editMessageText(cfg.telegramBotToken, chatId, messageId, text, keyboard.length > 0 ? keyboard : MAIN_MENU);
+      }
+      return;
+    }
+
+    await answerCallbackQuery(cfg.telegramBotToken, cq.id);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Callback query processing failed', { requestId, data, error: msg });
+    await answerCallbackQuery(cfg.telegramBotToken, cq.id, '❌ Ошибка, попробуйте ещё раз');
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

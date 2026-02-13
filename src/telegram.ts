@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { TelegramFile } from './types';
+import { TelegramFile, InlineKeyboard } from './types';
 import { log } from './logger';
 
 const TIMEOUT_MS = 15_000;
@@ -62,6 +62,81 @@ export async function sendMessage(
 }
 
 /**
+ * Send a text message with an inline keyboard.
+ */
+export async function sendMessageWithKeyboard(
+  token: string,
+  chatId: number,
+  text: string,
+  keyboard: InlineKeyboard,
+): Promise<void> {
+  const url = apiUrl(token, 'sendMessage');
+  try {
+    await axios.post(
+      url,
+      {
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard },
+      },
+      { timeout: TIMEOUT_MS },
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error('Failed to send Telegram message with keyboard', { chatId, error: message });
+  }
+}
+
+/**
+ * Edit an existing message text (used to update inline keyboard messages).
+ */
+export async function editMessageText(
+  token: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+  keyboard?: InlineKeyboard,
+): Promise<void> {
+  const url = apiUrl(token, 'editMessageText');
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: 'HTML',
+  };
+  if (keyboard) {
+    body.reply_markup = { inline_keyboard: keyboard };
+  }
+  try {
+    await axios.post(url, body, { timeout: TIMEOUT_MS });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error('Failed to edit Telegram message', { chatId, messageId, error: message });
+  }
+}
+
+/**
+ * Answer a callback query (dismiss the loading indicator on button press).
+ */
+export async function answerCallbackQuery(
+  token: string,
+  callbackQueryId: string,
+  text?: string,
+): Promise<void> {
+  const url = apiUrl(token, 'answerCallbackQuery');
+  try {
+    await axios.post(
+      url,
+      { callback_query_id: callbackQueryId, text },
+      { timeout: TIMEOUT_MS },
+    );
+  } catch {
+    // Best-effort
+  }
+}
+
+/**
  * Delete a message from a Telegram chat (used to remove messages with API keys).
  */
 export async function deleteMessage(
@@ -91,7 +166,7 @@ export async function setWebhook(
     {
       url: `${baseUrl}/telegram/webhook`,
       secret_token: secret,
-      allowed_updates: ['message', 'edited_message'],
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
     },
     { timeout: TIMEOUT_MS },
   );

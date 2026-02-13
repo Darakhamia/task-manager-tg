@@ -4,7 +4,22 @@ export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
+
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number; first_name?: string };
+  message?: TelegramMessage;
+  data?: string;
+}
+
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data?: string;
+}
+
+export type InlineKeyboard = InlineKeyboardButton[][];
 
 export interface TelegramMessage {
   message_id: number;
