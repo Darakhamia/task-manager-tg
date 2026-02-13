@@ -3,8 +3,6 @@ services:
     build: .
     container_name: task-manager-tg
     restart: unless-stopped
-    ports:
-      - "${PORT:-8443}:${PORT:-8443}"
     env_file:
       - .env
     environment:
@@ -19,3 +17,17 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.task-manager-tg.rule=Host(`tasks.polyglot.sbs`)"
+      - "traefik.http.routers.task-manager-tg.entrypoints=websecure"
+      - "traefik.http.routers.task-manager-tg.tls.certresolver=letsencrypt"
+      - "traefik.http.services.task-manager-tg.loadbalancer.server.port=${PORT:-8443}"
+      - "traefik.http.services.task-manager-tg.loadbalancer.server.scheme=https"
+      - "traefik.http.services.task-manager-tg.loadbalancer.serversTransport=insecure@internal"
+
+networks:
+  traefik-public:
+    external: true
