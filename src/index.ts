@@ -5,18 +5,19 @@ import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { loadConfig } from './config';
 import { initLogger, log } from './logger';
-import { initOpenAI, transcribe, parseTasks } from './openai';
-import { initNotion, createTasks } from './notion';
+import { initStore, getUser } from './store';
+import { transcribe, parseTasks } from './openai';
+import { createTasks } from './notion';
 import { downloadAndConvert } from './audio';
 import { sendMessage, setWebhook } from './telegram';
-import { TelegramUpdate, TelegramMessage, AppConfig, NotionCreateResult } from './types';
+import { handleStart, handleReset, handleStatus, handleOnboardingStep } from './onboarding';
+import { TelegramUpdate, TelegramMessage, AppConfig, UserData, NotionCreateResult } from './types';
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
 const config = loadConfig();
 initLogger(config);
-initOpenAI(config.openaiApiKey);
-initNotion(config.notionToken, config.notionDatabaseId);
+initStore(config.dataDir);
 
 const app = express();
 app.use(express.json());
@@ -67,6 +68,9 @@ async function handleUpdate(
   }
 
   const chatId = message.chat.id;
+  const firstName = message.from?.first_name;
+  const text = message.text?.trim() ?? '';
+
   log.info('Received update', {
     requestId,
     updateId: update.update_id,
@@ -82,10 +86,59 @@ async function handleUpdate(
     return;
   }
 
-  let inputText: string;
+  // ── Commands ────────────────────────────────────────────────────────────
+  if (text === '/start') {
+    await handleStart(cfg.telegramBotToken, chatId, firstName);
+    return;
+  }
+  if (text === '/reset') {
+    await handleReset(cfg.telegramBotToken, chatId, firstName);
+    return;
+  }
+  if (text === '/status') {
+    await handleStatus(cfg.telegramBotToken, chatId);
+    return;
+  }
 
+  // ── Onboarding flow (text only) ────────────────────────────────────────
+  if (message.text) {
+    const consumed = await handleOnboardingStep(
+      cfg.telegramBotToken,
+      chatId,
+      message.message_id,
+      message.text,
+    );
+    if (consumed) return;
+  }
+
+  // ── Check user is configured ──────────────────────────────────────────
+  const user = getUser(chatId);
+  if (!user || user.step !== 'ready') {
+    await sendMessage(
+      cfg.telegramBotToken,
+      chatId,
+      '⚙️ Бот ещё не настроен. Отправь /start чтобы начать настройку.',
+    );
+    return;
+  }
+
+  // ── Process task message ──────────────────────────────────────────────
+  await processTaskMessage(message, user, requestId, cfg);
+}
+
+// ── Task processing (for configured users) ──────────────────────────────────
+
+async function processTaskMessage(
+  message: TelegramMessage,
+  user: UserData,
+  requestId: string,
+  cfg: AppConfig,
+): Promise<void> {
+  const chatId = message.chat.id;
+
+  let inputText: string;
   try {
-    inputText = await extractText(message, requestId, cfg);
+    inputText = await extractText(message, requestId, cfg, user);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('Failed to extract text', { requestId, error: msg });
@@ -105,14 +158,14 @@ async function handleUpdate(
   // Parse tasks
   let tasks;
   try {
-    tasks = await parseTasks(inputText, requestId);
+    tasks = await parseTasks(inputText, requestId, user.openaiApiKey!);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('Task parsing failed', { requestId, error: msg });
     await sendMessage(
       cfg.telegramBotToken,
       chatId,
-      '❌ Не удалось распознать задачи из сообщения. Попробуйте переформулировать.',
+      '❌ Не удалось распознать задачи. Попробуйте переформулировать.',
     );
     return;
   }
@@ -125,14 +178,14 @@ async function handleUpdate(
   // Create in Notion
   let results: NotionCreateResult[];
   try {
-    results = await createTasks(tasks, requestId);
+    results = await createTasks(tasks, requestId, user.notionToken!, user.notionDatabaseId!);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('Notion batch creation failed', { requestId, error: msg });
     await sendMessage(
       cfg.telegramBotToken,
       chatId,
-      '❌ Ошибка при создании задач в Notion. Попробуйте позже.',
+      '❌ Ошибка при создании задач в Notion. Проверьте настройки (/status) или сбросьте (/reset).',
     );
     return;
   }
@@ -148,6 +201,7 @@ async function extractText(
   message: TelegramMessage,
   requestId: string,
   cfg: AppConfig,
+  user: UserData,
 ): Promise<string> {
   if (message.voice) {
     const { mp3Path, cleanup } = await downloadAndConvert(
@@ -156,7 +210,7 @@ async function extractText(
       requestId,
     );
     try {
-      const text = await transcribe(mp3Path, requestId);
+      const text = await transcribe(mp3Path, requestId, user.openaiApiKey!);
       log.info('Transcription result', { requestId, textLength: text.length });
       return text;
     } finally {
@@ -177,18 +231,15 @@ function buildConfirmation(results: NotionCreateResult[]): string {
   const total = results.length;
 
   if (failed.length === 0) {
-    // All succeeded
     const header = `✅ Добавлено ${succeeded.length} ${pluralTask(succeeded.length)}:`;
     const list = formatTaskList(succeeded, 10);
     return `${header}\n${list}`;
   }
 
   if (succeeded.length === 0) {
-    // All failed
-    return `❌ Не удалось создать задачи в Notion (${total} шт.). Проверьте настройки базы данных.`;
+    return `❌ Не удалось создать задачи в Notion (${total} шт.). Проверьте настройки (/status) или сбросьте (/reset).`;
   }
 
-  // Partial
   const header = `⚠️ Добавлено ${succeeded.length}/${total} ${pluralTask(succeeded.length)}:`;
   const list = formatTaskList(succeeded, 10);
   const failedNames = failed.map((r) => r.task.name).join(', ');
@@ -213,7 +264,6 @@ function pluralTask(n: number): string {
 
 // ── Start server ────────────────────────────────────────────────────────────
 
-// Try to load TLS certs for direct HTTPS (no Nginx needed)
 const certDir = path.resolve(__dirname, '..', 'certs');
 const certPath = path.join(certDir, 'cert.pem');
 const keyPath = path.join(certDir, 'key.pem');
@@ -228,7 +278,6 @@ if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
     registerWebhook();
   });
 } else {
-  // Fallback to plain HTTP (behind Nginx/reverse proxy)
   app.listen(config.port, () => {
     log.info('HTTP server started', { port: config.port });
     registerWebhook();

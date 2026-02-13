@@ -49,16 +49,33 @@ export interface NotionCreateResult {
   error?: string;
 }
 
+// ── Per-user data ───────────────────────────────────────────────────────────
+
+export type OnboardingStep =
+  | 'awaiting_openai_key'
+  | 'awaiting_notion_token'
+  | 'awaiting_notion_db'
+  | 'ready';
+
+export interface UserData {
+  chatId: number;
+  step: OnboardingStep;
+  openaiApiKey?: string;
+  notionToken?: string;
+  notionDatabaseId?: string;
+  firstName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ── Config loaded from env ──────────────────────────────────────────────────
 
 export interface AppConfig {
   telegramBotToken: string;
   telegramWebhookSecret: string;
-  openaiApiKey: string;
-  notionToken: string;
-  notionDatabaseId: string;
   baseUrl: string;
   port: number;
   allowedChatIds: number[];
   logLevel: string;
+  dataDir: string;
 }

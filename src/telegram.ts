@@ -62,6 +62,22 @@ export async function sendMessage(
 }
 
 /**
+ * Delete a message from a Telegram chat (used to remove messages with API keys).
+ */
+export async function deleteMessage(
+  token: string,
+  chatId: number,
+  messageId: number,
+): Promise<void> {
+  const url = apiUrl(token, 'deleteMessage');
+  try {
+    await axios.post(url, { chat_id: chatId, message_id: messageId }, { timeout: TIMEOUT_MS });
+  } catch {
+    // Best-effort: if delete fails (e.g. message too old), just continue
+  }
+}
+
+/**
  * Set the webhook URL for the bot.
  */
 export async function setWebhook(

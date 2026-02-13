@@ -20,12 +20,10 @@ export function loadConfig(): AppConfig {
   return {
     telegramBotToken: required('TELEGRAM_BOT_TOKEN'),
     telegramWebhookSecret: required('TELEGRAM_WEBHOOK_SECRET'),
-    openaiApiKey: required('OPENAI_API_KEY'),
-    notionToken: required('NOTION_TOKEN'),
-    notionDatabaseId: required('NOTION_DATABASE_ID'),
     baseUrl: required('BASE_URL'),
     port: parseInt(process.env.PORT || '3000', 10),
     allowedChatIds,
     logLevel: process.env.LOG_LEVEL || 'info',
+    dataDir: process.env.DATA_DIR || './data',
   };
 }

@@ -3,16 +3,28 @@ import { createReadStream } from 'node:fs';
 import { ParsedTask } from './types';
 import { log } from './logger';
 
-let client: OpenAI;
+// ── Client cache (one per API key) ─────────────────────────────────────────
 
-export function initOpenAI(apiKey: string): void {
-  client = new OpenAI({ apiKey });
+const clients = new Map<string, OpenAI>();
+
+function getClient(apiKey: string): OpenAI {
+  let c = clients.get(apiKey);
+  if (!c) {
+    c = new OpenAI({ apiKey });
+    clients.set(apiKey, c);
+  }
+  return c;
 }
 
 // ── Transcription ───────────────────────────────────────────────────────────
 
-export async function transcribe(mp3Path: string, requestId: string): Promise<string> {
+export async function transcribe(
+  mp3Path: string,
+  requestId: string,
+  apiKey: string,
+): Promise<string> {
   log.info('Starting transcription', { requestId, mp3Path });
+  const client = getClient(apiKey);
 
   const doTranscribe = async (): Promise<string> => {
     const file = createReadStream(mp3Path);
@@ -64,10 +76,15 @@ function buildSystemPrompt(): string {
 
 const REPAIR_PROMPT = `Предыдущий ответ не является валидным JSON. Исправь его и верни ТОЛЬКО валидный JSON-массив задач. Никакого другого текста.`;
 
-export async function parseTasks(inputText: string, requestId: string): Promise<ParsedTask[]> {
+export async function parseTasks(
+  inputText: string,
+  requestId: string,
+  apiKey: string,
+): Promise<ParsedTask[]> {
   log.info('Parsing tasks from text', { requestId, textLength: inputText.length });
+  const client = getClient(apiKey);
 
-  const raw = await chatCompletion(buildSystemPrompt(), inputText, requestId);
+  const raw = await chatCompletion(client, buildSystemPrompt(), inputText, requestId);
   const parsed = tryParseJson(raw);
 
   if (parsed) {
@@ -77,7 +94,7 @@ export async function parseTasks(inputText: string, requestId: string): Promise<
 
   // Repair attempt
   log.warn('Invalid JSON from LLM, attempting repair', { requestId });
-  const repaired = await chatCompletion(REPAIR_PROMPT, raw, requestId);
+  const repaired = await chatCompletion(client, REPAIR_PROMPT, raw, requestId);
   const parsed2 = tryParseJson(repaired);
 
   if (parsed2) {
@@ -88,7 +105,12 @@ export async function parseTasks(inputText: string, requestId: string): Promise<
   throw new Error('LLM returned invalid JSON even after repair attempt');
 }
 
-async function chatCompletion(system: string, user: string, requestId: string): Promise<string> {
+async function chatCompletion(
+  client: OpenAI,
+  system: string,
+  user: string,
+  requestId: string,
+): Promise<string> {
   const response = await client.chat.completions.create({
     model: 'gpt-4o-mini',
     temperature: 0.1,
