@@ -1,4 +1,7 @@
 import express, { Request, Response } from 'express';
+import https from 'node:https';
+import fs from 'node:fs';
+import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { loadConfig } from './config';
 import { initLogger, log } from './logger';
@@ -210,10 +213,29 @@ function pluralTask(n: number): string {
 
 // ── Start server ────────────────────────────────────────────────────────────
 
-app.listen(config.port, () => {
-  log.info('Server started', { port: config.port });
+// Try to load TLS certs for direct HTTPS (no Nginx needed)
+const certDir = path.resolve(__dirname, '..', 'certs');
+const certPath = path.join(certDir, 'cert.pem');
+const keyPath = path.join(certDir, 'key.pem');
 
-  // Optionally set webhook on startup
+if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+  const sslOptions = {
+    cert: fs.readFileSync(certPath),
+    key: fs.readFileSync(keyPath),
+  };
+  https.createServer(sslOptions, app).listen(config.port, () => {
+    log.info('HTTPS server started', { port: config.port });
+    registerWebhook();
+  });
+} else {
+  // Fallback to plain HTTP (behind Nginx/reverse proxy)
+  app.listen(config.port, () => {
+    log.info('HTTP server started', { port: config.port });
+    registerWebhook();
+  });
+}
+
+function registerWebhook(): void {
   if (config.baseUrl) {
     setWebhook(config.telegramBotToken, config.baseUrl, config.telegramWebhookSecret).catch(
       (err) => {
@@ -221,4 +243,4 @@ app.listen(config.port, () => {
       },
     );
   }
-});
+}
