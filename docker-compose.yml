@@ -8,7 +8,6 @@ services:
     environment:
       - NODE_ENV=production
     volumes:
-      - ./certs:/app/certs:ro
       - ./data:/app/data
     tmpfs:
       - /tmp:size=256M
@@ -25,8 +24,6 @@ services:
       - "traefik.http.routers.task-manager-tg.entrypoints=websecure"
       - "traefik.http.routers.task-manager-tg.tls.certresolver=letsencrypt"
       - "traefik.http.services.task-manager-tg.loadbalancer.server.port=${PORT:-8443}"
-      - "traefik.http.services.task-manager-tg.loadbalancer.server.scheme=https"
-      - "traefik.http.services.task-manager-tg.loadbalancer.serversTransport=insecure@internal"
 
 networks:
   traefik-public:
