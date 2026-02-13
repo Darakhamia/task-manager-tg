@@ -34,8 +34,14 @@ export async function transcribe(mp3Path: string, requestId: string): Promise<st
 
 // ── Task parsing ────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `Ты — ассистент для парсинга задач. Пользователь присылает текст (возможно, расшифровку голосового сообщения).
+function buildSystemPrompt(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const weekday = new Date().toLocaleDateString('ru-RU', { weekday: 'long' });
+
+  return `Ты — ассистент для парсинга задач. Пользователь присылает текст (возможно, расшифровку голосового сообщения).
 Твоя задача — извлечь из текста список задач и вернуть ТОЛЬКО валидный JSON-массив.
+
+Сегодня: ${today} (${weekday}). Используй эту дату для вычисления относительных дедлайнов ("завтра", "в понедельник", "через неделю", "до пятницы" и т.д.). Относительные даты всегда означают ближайшую будущую дату.
 
 Каждый элемент массива — объект с полями:
 - "name": string — краткое название задачи (до 80 символов)
@@ -54,13 +60,14 @@ const SYSTEM_PROMPT = `Ты — ассистент для парсинга за�
 Пример входа: "Купить молоко и хлеб, а ещё срочно позвонить врачу"
 Пример выхода:
 [{"name":"Купить молоко и хлеб","description":"","status":"To do","priority":"Medium","due":""},{"name":"Позвонить врачу","description":"Срочно","status":"To do","priority":"High","due":""}]`;
+}
 
 const REPAIR_PROMPT = `Предыдущий ответ не является валидным JSON. Исправь его и верни ТОЛЬКО валидный JSON-массив задач. Никакого другого текста.`;
 
 export async function parseTasks(inputText: string, requestId: string): Promise<ParsedTask[]> {
   log.info('Parsing tasks from text', { requestId, textLength: inputText.length });
 
-  const raw = await chatCompletion(SYSTEM_PROMPT, inputText, requestId);
+  const raw = await chatCompletion(buildSystemPrompt(), inputText, requestId);
   const parsed = tryParseJson(raw);
 
   if (parsed) {
