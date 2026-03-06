@@ -4,7 +4,7 @@
   "description": "Telegram bot that converts voice/text messages into Notion tasks",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npx tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts"
   },
